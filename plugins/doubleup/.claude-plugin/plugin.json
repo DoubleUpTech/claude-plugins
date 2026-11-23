@@ -1,0 +1,9 @@
+{
+  "name": "doubleup",
+  "version": "0.1.0",
+  "description": "Pair two friends and their agents on one court: rally work between sessions, chat from the prompt, and keep score as you go.",
+  "author": {
+    "name": "Double Up"
+  },
+  "types": "./contract.d.ts"
+}

@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Install Claude Code
+        run: npm install --global @anthropic-ai/claude-code
+
+      - name: Install plugin dev dependencies
+        working-directory: plugins/doubleup
+        run: npm install
+
+      - name: Typecheck
+        working-directory: plugins/doubleup
+        run: npx tsc -p .
+
+      - name: Validate plugins
+        run: claude plugin validate plugins/doubleup
+
+      - name: Test plugins
+        run: claude plugin test plugins/doubleup
