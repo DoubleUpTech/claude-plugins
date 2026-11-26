@@ -8,7 +8,6 @@ export interface MatchJson {
   id: number
   title: string
   state: 'waiting' | 'live' | 'finished'
-  repo_remote: string | null
   rally_cap: number
   volley_count: number
   seats: SeatJson[]
@@ -65,11 +64,17 @@ export function parseJoinArg(arg: string): { matchId: number; token?: string } |
   return token ? { matchId, token } : { matchId }
 }
 
-export function joinRequest(base: string, token: string, matchId: number, inviteToken?: string): HttpRequest {
+// The joiner's local repo rides along: each side records the repo it works
+// in, so both sides see both remotes on the court.
+export function joinRequest(base: string, token: string, matchId: number, inviteToken: string | undefined, repoRemote: string | null): HttpRequest {
   const url = `${base}/api/v1/matches/${matchId}/join`
   return {
     url: inviteToken ? `${url}?token=${encodeURIComponent(inviteToken)}` : url,
-    init: { method: 'POST', headers: authHeaders(token) },
+    init: {
+      method: 'POST',
+      headers: authHeaders(token),
+      body: JSON.stringify({ repo_remote: repoRemote ?? '' }),
+    },
   }
 }
 

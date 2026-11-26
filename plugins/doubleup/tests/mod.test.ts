@@ -34,9 +34,9 @@ const seeded = (over: Partial<DoubleUpState>): DoubleUpState => ({
   ...over,
 })
 
-const seat = (side: 'us' | 'them', role: 'human' | 'agent', name: string): SeatJson => ({
+const seat = (side: 'us' | 'them', role: 'human' | 'agent', name: string, repo: string | null = null): SeatJson => ({
   id: 1, side, role, display_name: name, status: null, status_at: null,
-  last_seen_at: null, presence: 'online', auto_return: false, harness: null,
+  last_seen_at: null, presence: 'online', auto_return: false, harness: null, repo_remote: repo,
 })
 
 function textOf(out: unknown): string {
@@ -198,12 +198,12 @@ test('the poll loop folds the feed in and the ladder backs off when quiet', asyn
 
 const MATCH_BODY = (over: boolean) => ({
   id: 9, title: 'Billing bug', state: over ? 'finished' : 'waiting',
-  repo_remote: 'github.com/acme/app', rally_cap: 6, volley_count: over ? 6 : 0,
+  rally_cap: 6, volley_count: over ? 6 : 0,
   seats: [
     { id: 1, side: 'us', role: 'human', display_name: 'Sam', status: null, status_at: null,
-      last_seen_at: null, presence: 'online', auto_return: false, harness: null },
+      last_seen_at: null, presence: 'online', auto_return: false, harness: null, repo_remote: 'github.com/acme/api' },
     { id: 2, side: 'us', role: 'agent', display_name: "Sam's agent", status: null, status_at: null,
-      last_seen_at: null, presence: 'online', auto_return: false, harness: null },
+      last_seen_at: null, presence: 'online', auto_return: false, harness: null, repo_remote: 'github.com/acme/api' },
   ],
 })
 
@@ -251,9 +251,10 @@ test('serve creates the court, opens the pane, and shows the invite link', async
   expect(court.matchState).toBe('waiting')
 })
 
-test('join takes a link, keeps the seats, and opens the pane', async ($, on) => {
+test('join takes a link, sends the local repo, and opens the pane', async ($, on) => {
   baseStubs(on)
   let court = seeded({ token: 'tok-1' })
+  const posts: string[] = []
   const opens: string[] = []
   on('state.get', (_d, e) => ({
     value: {
@@ -269,11 +270,16 @@ test('join takes a link, keeps the seats, and opens the pane', async ($, on) => 
   })
   on('http.fetch', (_d, e) => {
     const url = String(e.url ?? '')
+    posts.push(`${url} ${String((e.init as { body?: string } | undefined)?.body ?? '')}`)
     if (url.includes('/join')) {
       expect(url).toContain('token=inv-9')
       return answer(200, MATCH_BODY(false))
     }
     return answer(200, {})
+  })
+  on('process.run', (_d, e) => {
+    const argv = Array.isArray((e as { argv?: unknown }).argv) ? (e as { argv: string[] }).argv.join(' ') : ''
+    return { value: { exitCode: 0, stdout: argv.includes('rev-parse') ? 'main\n' : 'git@github.com:acme/web.git\n', stderr: '' } }
   })
   on('ui.open', (_d, e) => {
     opens.push(String(e.id ?? ''))
@@ -285,6 +291,7 @@ test('join takes a link, keeps the seats, and opens the pane', async ($, on) => 
   expect(out).toContain('Court 9 joined')
   expect(opens).toContain('doubleup-court')
   expect(court.matchId).toBe(9)
+  expect(posts.some(p => p.includes('/join') && p.includes('"repo_remote":"git@github.com:acme/web.git"'))).toBe(true)
 })
 
 test('the pane renders the court, and the auto toggle PATCHes the agent seat', async ($, on) => {
@@ -292,7 +299,7 @@ test('the pane renders the court, and the auto toggle PATCHes the agent seat', a
   const agentSeat = { ...seat('us', 'agent', "Sam's agent"), id: 2, auto_return: false }
   let court = seeded({
     token: 'tok-1', matchId: 9, matchState: 'live', volleyCount: 3, rallyCap: 6,
-    seats: [seat('us', 'human', 'Sam'), agentSeat, seat('them', 'human', 'Alex')],
+    seats: [seat('us', 'human', 'Sam', 'github.com/acme/api'), agentSeat, seat('them', 'human', 'Alex', 'github.com/acme/web')],
     inbox: [{
       id: 12, kind: 'serve', body: 'Fixed the invoice loop', refs: [{ type: 'branch', name: 'fix/billing' }],
       side: 'us', role: 'agent', name: "Sam's agent", to_side: 'them',
@@ -324,6 +331,8 @@ test('the pane renders the court, and the auto toggle PATCHes the agent seat', a
   })
   const header = await pane.find({ type: 'Text', text: /court 9/ })
   expect(header?.text).toContain('Rally 3/6')
+  const repos = await pane.find({ type: 'Text', text: /repos:/ })
+  expect(repos?.text).toContain('github.com/acme/api ⇄ github.com/acme/web')
   const serve = await pane.find({ type: 'Text', text: /Fix the invoice|invoice loop/ })
   expect(serve?.text).toContain('⎇ fix/billing')
 
@@ -491,7 +500,7 @@ test('court answers with the digest the agent re-reads', async ($, on) => {
   baseStubs(on)
   let court = seeded({
     token: 'tok-1', matchId: 9, matchState: 'live', volleyCount: 2, rallyCap: 6,
-    seats: [seat('us', 'human', 'Sam')],
+    seats: [seat('us', 'human', 'Sam', 'github.com/acme/api')],
   })
   on('state.get', (_d, e) => ({
     value: {
@@ -523,6 +532,7 @@ test('court answers with the digest the agent re-reads', async ($, on) => {
   const out = await $.tool.call({ tool: 'mcp__doubleup__court' })
   const text = JSON.stringify(out)
   expect(text).toContain('Court 9 is waiting')
+  expect(text).toContain('Repos: ours: github.com/acme/api')
   expect(text).toContain('ship it?')
 })
 
@@ -530,7 +540,7 @@ test('compose injects each event once, then lists ids; status reminds on the cad
   baseStubs(on)
   let court = seeded({
     token: 'tok-1', matchId: 9, matchState: 'live', volleyCount: 1, rallyCap: 6, turnCount: 4,
-    seats: [seat('us', 'human', 'Sam'), seat('them', 'human', 'Alex')],
+    seats: [seat('us', 'human', 'Sam', 'github.com/acme/api'), seat('them', 'human', 'Alex', 'github.com/acme/web')],
     inbox: [
       {
         id: 41, kind: 'chat', body: 'billing fix landed?', refs: [], side: 'them', role: 'human',
@@ -562,6 +572,9 @@ test('compose injects each event once, then lists ids; status reminds on the cad
   const first = await $.prompt.compose(facts)
   const firstText = JSON.stringify(first)
   expect(firstText).toContain('billing fix landed?')
+  expect(firstText).toContain('Our repo: github.com/acme/api.')
+  expect(firstText).toContain('Their repo: github.com/acme/web.')
+  expect(firstText).toContain('git remote add them github.com/acme/web')
   expect(firstText).toContain('pushed fix/billing')
   expect(firstText).toContain('Call status()') // turn 5
   expect(court.injectedEventIds).toEqual([41, 43])

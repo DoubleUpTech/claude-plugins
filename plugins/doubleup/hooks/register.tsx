@@ -329,9 +329,13 @@ async function renderCourtPane($: Dollar, e: unknown, next: Next): Promise<unkno
     )
   }
 
-  const room = Math.max(4, ((e as { viewport?: { rows?: number } }).viewport?.rows ?? 24) - 6)
   const us = (s.seats ?? []).filter(seat => seat.side === 'us')
   const them = (s.seats ?? []).filter(seat => seat.side === 'them')
+  const repos = [
+    us.find(seat => seat.repo_remote)?.repo_remote,
+    them.find(seat => seat.repo_remote)?.repo_remote,
+  ].filter(Boolean)
+  const room = Math.max(4, ((e as { viewport?: { rows?: number } }).viewport?.rows ?? 24) - (repos.length > 0 ? 7 : 6))
   const rally = s.inbox.slice(-room).map(eventLine)
   const mine = us.find(seat => seat.role === 'agent')
   const autoLabel = mine?.auto_return ? 'Auto-return on' : 'Auto-return off'
@@ -339,6 +343,9 @@ async function renderCourtPane($: Dollar, e: unknown, next: Next): Promise<unkno
   return (
     <Box flexDirection="column">
       <Text>{`court ${s.matchId} · ${s.matchState ?? 'fresh'} · Rally ${s.volleyCount}/${s.rallyCap}`}</Text>
+      {repos.length > 0 && (
+        <Text dimColor>{`repos: ${[...new Set(repos)].join(' ⇄ ')}`}</Text>
+      )}
       <Text>{us.map(seatLine).join('  ')}</Text>
       <Text dimColor>{them.map(seatLine).join('  ')}</Text>
       {rally.map((line, i) => (
@@ -408,13 +415,15 @@ async function serveCourt($: Dollar, arg: string): Promise<{ text: string }> {
   return { text: `Court ${out.match.id} is waiting. ${invite}` }
 }
 
-// Join takes a court id or a full invite link.
+// Join takes a court id or a full invite link; the local repo rides along
+// so both sides of the court know both repos.
 async function joinCourt($: Dollar, arg: string): Promise<{ text: string }> {
   const s = await read($, state)
   if (!s.token) return { text: 'Not logged in. Run /doubleup login.' }
   const parsed = parseJoinArg(arg)
   if (!parsed) return { text: 'Try: /doubleup join 42 or /doubleup join <invite link>.' }
-  const req = joinRequest(baseUrl(), s.token, parsed.matchId, parsed.token)
+  const repo = await gitOrigin($)
+  const req = joinRequest(baseUrl(), s.token, parsed.matchId, parsed.token, repo.remote)
   const res = await $.http.fetch(req.url, req.init)
   const out = parseCourtResult(res.status, await bodyOf(res))
   if (out.kind !== 'match') {

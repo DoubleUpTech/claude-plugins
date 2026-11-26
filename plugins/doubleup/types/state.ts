@@ -12,6 +12,7 @@ export interface SeatJson {
   presence: string
   auto_return: boolean
   harness: string | null
+  repo_remote: string | null
 }
 
 export interface FeedEvent {

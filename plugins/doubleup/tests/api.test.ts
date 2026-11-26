@@ -74,7 +74,7 @@ test('the feed sends the bearer token and the cursor, and parses statuses', () =
 
 const seat = (side: 'us' | 'them', role: 'human' | 'agent', name: string): SeatJson => ({
   id: 1, side, role, display_name: name, status: null, status_at: null,
-  last_seen_at: null, presence: 'online', auto_return: false, harness: null,
+  last_seen_at: null, presence: 'online', auto_return: false, harness: null, repo_remote: null,
 })
 
 const chat = (id: number, body: string): FeedEvent => ({
