@@ -468,6 +468,9 @@ async function interceptDoubleChat($: Dollar, e: unknown, next: Next): Promise<u
     return next(e)
   }
   $.ui.toast('Sent to the court.')
+  // A dropped prompt never enters, so the box keeps the draft: clear it
+  // ourselves or the person is left staring at the message they sent.
+  await $.prompt.fill({ text: '' })
   return { drop: 'doubleup: the prompt went to the court chat' }
 }
 

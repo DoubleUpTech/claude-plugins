@@ -595,12 +595,18 @@ test('a >> prompt goes to the court chat and is dropped from the model', async (
     posts.push(`${String(e.url ?? '')} ${String((e.init as { body?: string } | undefined)?.body ?? '')}`)
     return answer(201, {})
   })
-  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '' } }))
+  const fills: string[] = []
+  on('prompt.fill', (_d, e) => {
+    fills.push(`${e.text ?? ''}:${e.mode ?? 'replace'}`)
+    return { isFilled: true }
+  })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
 
   const dropped = await $.prompt.submit({ text: '>> lunch in 10?' })
   expect(JSON.stringify(dropped)).toContain('drop')
   expect(posts.some(p => p.includes('"kind":"chat"') && p.includes('lunch in 10?'))).toBe(true)
+  // A dropped prompt never enters, so the mod empties the box itself.
+  expect(fills).toEqual([':replace'])
 
   const kept = await $.prompt.submit({ text: 'fix the login bug' })
   expect(posts.filter(p => p.includes('"kind":"chat"')).length).toBe(1)

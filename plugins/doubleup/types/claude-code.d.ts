@@ -25,7 +25,7 @@ declare module 'claude-code' {
       call(input: { tool: string } & Record<string, unknown>): Promise<unknown>
     }
     session: { start(opts?: { cwd?: string; surface?: string; isInteractive?: boolean }): Promise<unknown> }
-    prompt: { submit(spec: { text: string }): Promise<unknown>; compose(spec?: Record<string, unknown>): Promise<unknown> }
+    prompt: { submit(spec: { text: string }): Promise<unknown>; compose(spec?: Record<string, unknown>): Promise<unknown>; fill(spec: { text: string; mode?: 'replace' | 'append' | 'insert'; cursor?: number }): Promise<{ isFilled: boolean }> }
     audio: { play(spec: { asset?: string; url?: string; base64?: string; shouldLoop?: boolean; gain?: number }): Promise<unknown> }
     ui: {
       toast(text: string): void
