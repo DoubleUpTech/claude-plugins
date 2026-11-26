@@ -1,7 +1,6 @@
 {
   "name": "doubleup",
-  "version": "0.1.0",
-  "description": "Pair two friends and their agents on one court: rally work between sessions, chat from the prompt, and keep score as you go.",
+  "version": "0.2.0",
   "author": {
     "name": "Double Up"
   },
