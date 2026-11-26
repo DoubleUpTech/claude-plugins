@@ -25,6 +25,12 @@ declare module 'claude-code' {
       call(input: { tool: string } & Record<string, unknown>): Promise<unknown>
     }
     session: { start(opts?: { cwd?: string; surface?: string; isInteractive?: boolean }): Promise<unknown> }
+    store: {
+      get(key: string): Promise<unknown>
+      set(key: string, value: unknown): Promise<void>
+      delete(key: string): Promise<void>
+      keys(): Promise<string[]>
+    }
     prompt: { submit(spec: { text: string }): Promise<unknown>; compose(spec?: Record<string, unknown>): Promise<unknown>; fill(spec: { text: string; mode?: 'replace' | 'append' | 'insert'; cursor?: number }): Promise<{ isFilled: boolean }> }
     audio: { play(spec: { asset?: string; url?: string; base64?: string; shouldLoop?: boolean; gain?: number }): Promise<unknown> }
     ui: {
@@ -58,8 +64,15 @@ declare module 'claude-code' {
 
   export type AnyComponent = (props: Record<string, unknown>) => unknown
 
+  export interface FoundElement {
+    type: string
+    key: string | undefined
+    props: Record<string, unknown>
+    text: string
+  }
+
   export interface Mounted {
-    find(query: { type: string; text?: RegExp }): Promise<{ text?: string } | undefined>
+    find(query: { type: string; text?: RegExp }): Promise<FoundElement | undefined>
     unmount(): Promise<void>
   }
 

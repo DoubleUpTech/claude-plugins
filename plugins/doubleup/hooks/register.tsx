@@ -15,8 +15,10 @@ import {
   baseUrl,
   bodyOf,
   feedRequest,
+  meRequest,
   parseAuthorizeResponse,
   parseFeedResponse,
+  parseMeResponse,
   parseTokenResponse,
   tokenRequest,
 } from '../lib/api'
@@ -35,6 +37,8 @@ import {
   parseJoinArg,
   parseServeTarget,
   presenceRequest,
+  renameRequest,
+  revokeRequest,
   serveRequest,
   statusRequest,
 } from '../lib/court'
@@ -96,6 +100,11 @@ function refLine(ref: { type: string } & Record<string, unknown>): string {
   return ''
 }
 
+// The court's two sides, the same pinks and cyans the web chat wears
+// (tokens.css --us/--them).
+const US_COLOR = '#ff3d9a'
+const THEM_COLOR = '#1fe5ff'
+
 export const register: Register = on => {
   on('session.start', async ($: Dollar, e: unknown, next: Next) => {
     await $.command.register({
@@ -127,6 +136,21 @@ export const register: Register = on => {
       description: 'Read the court again: seats, statuses, and the last 50 rally events.',
       inputSchema: { type: 'object', properties: {} },
     })
+
+    // The stored token outlives a restart: put it back, and the court it
+    // was in, before anything else runs. Best effort: a failed read, a
+    // dead token, or no match to retake leaves a clean, signed-out-or-in
+    // state instead of an error.
+    try {
+      const saved = await $.store.get('auth')
+      const savedToken = typeof saved === 'object' && saved !== null &&
+        typeof (saved as { token?: unknown }).token === 'string'
+        ? (saved as { token: string }).token : undefined
+      if (savedToken !== undefined) {
+        await update($, state, s => (s.token === undefined ? { ...s, token: savedToken } : s))
+        await restoreCourt($)
+      }
+    } catch {}
     if (!loopStarted) {
       loopStarted = true
       // The poll loop: sleep on the ladder, pull the feed, fold it in. One
@@ -190,13 +214,20 @@ export const register: Register = on => {
       // interval cannot end the wait early.
       void (async () => {
         const deadline = Date.now() + 15 * 60 * 1000
+        // The device names itself after the machine it runs on, best effort.
+        let deviceName = 'claude-code'
+        try {
+          const host = await $.process.run(['hostname'])
+          if (host.exitCode === 0) deviceName = `claude-code on ${String(host.stdout).trim()}`
+        } catch {}
         while (Date.now() < deadline) {
           try {
-            const treq = tokenRequest(base, az.device_code, 'claude-code')
+            const treq = tokenRequest(base, az.device_code, deviceName)
             const tres = await $.http.fetch(treq.url, treq.init)
             const out = parseTokenResponse(tres.status, await bodyOf(tres))
             if (out.kind === 'token') {
               await update($, state, s => ({ ...s, token: out.token }))
+              await $.store.set('auth', { token: out.token })
               $.ui.toast('Ace. Double Up is in.')
               return
             }
@@ -217,8 +248,24 @@ export const register: Register = on => {
     }
 
     if (args === 'logout') {
-      await update($, state, s => ({ ...s, token: undefined }))
-      return { text: 'Logged out. Revoke the device from the web settings page when you want it gone for good.' }
+      const s = await read($, state)
+      if (s.token) {
+        const req = revokeRequest(baseUrl(), s.token)
+        try { await $.http.fetch(req.url, req.init) } catch {}
+      }
+      await $.store.delete('auth')
+      await update($, state, st => ({ ...st, token: undefined }))
+      return { text: 'Logged out. The device is off the court for good.' }
+    }
+
+    if (args.startsWith('name')) {
+      const name = args.slice('name'.length).trim()
+      const s = await read($, state)
+      if (!s.token) return { text: 'Not logged in. Run /doubleup login.' }
+      if (!name || name.length > 100) return { text: 'Try: /doubleup name <up to 100 characters>.' }
+      const req = renameRequest(baseUrl(), s.token, name)
+      const res = await $.http.fetch(req.url, req.init)
+      return { text: res.status === 200 ? `This device is now "${name}".` : 'Fault: the rename did not land. Try again.' }
     }
 
     if (args === 'status') {
@@ -283,7 +330,7 @@ export const register: Register = on => {
       return { text: 'Match over.' }
     }
 
-    return { text: 'Try: /doubleup login, serve, join, court, auto on|off, sound on|off, leave, finish, logout, status.' }
+    return { text: 'Try: /doubleup login, serve, join, court, name, auto on|off, sound on|off, leave, finish, logout, status.' }
   })
 
   // A working turn means the person is at the net: keep the poll fast.
@@ -320,6 +367,29 @@ export const register: Register = on => {
   on('prompt.compose', composeCourt)
 }
 
+// After a restart with a stored token: find the account's most recent
+// waiting or live court and retake the seats this device already holds —
+// the same court, the same seats, no join call. A user with no seat (they
+// only created it or were invited) stays courtless: rejoining needs an
+// explicit /doubleup join. Best effort throughout.
+async function restoreCourt($: Dollar): Promise<void> {
+  const s = await read($, state)
+  if (s.token === undefined || s.matchId !== undefined) return
+  const base = baseUrl()
+  const meReq = meRequest(base, s.token)
+  const meRes = await $.http.fetch(meReq.url, meReq.init)
+  const me = parseMeResponse(meRes.status, await bodyOf(meRes))
+  if (me.kind !== 'me') return
+  const live = me.matches.filter(m => m.state === 'waiting' || m.state === 'live')
+  const latest = live[live.length - 1]
+  if (!latest) return
+  const req = courtDigestRequest(base, s.token, latest.id)
+  const res = await $.http.fetch(req.url, req.init)
+  const out = parseCourtResult(res.status, await bodyOf(res))
+  if (out.kind !== 'match') return
+  await update($, state, st => (st.matchId === undefined ? { ...st, ...courtFromMatch(out.match) } : st))
+}
+
 // The court pane: header, scoreboard, rally, chat input, auto-return toggle.
 // Top level on purpose: the engine only accepts hooks named by a function
 // declared at the top of the module.
@@ -343,7 +413,7 @@ async function renderCourtPane($: Dollar, e: unknown, next: Next): Promise<unkno
     them.find(seat => seat.repo_remote)?.repo_remote,
   ].filter(Boolean)
   const room = Math.max(4, ((e as { viewport?: { rows?: number } }).viewport?.rows ?? 24) - (repos.length > 0 ? 7 : 6))
-  const rally = s.inbox.slice(-room).map(eventLine)
+  const rally = s.inbox.slice(-room)
   const mine = us.find(seat => seat.role === 'agent')
   const autoLabel = mine?.auto_return ? 'Auto-return on' : 'Auto-return off'
 
@@ -353,10 +423,13 @@ async function renderCourtPane($: Dollar, e: unknown, next: Next): Promise<unkno
       {repos.length > 0 && (
         <Text dimColor>{`repos: ${[...new Set(repos)].join(' ⇄ ')}`}</Text>
       )}
-      <Text>{us.map(seatLine).join('  ')}</Text>
-      <Text dimColor>{them.map(seatLine).join('  ')}</Text>
-      {rally.map((line, i) => (
-        <Text key={`r${i}`} dimColor={i < rally.length - 1}>{line}</Text>
+      <Text color={US_COLOR}>{us.map(seatLine).join('  ')}</Text>
+      <Text color={THEM_COLOR}>{them.map(seatLine).join('  ')}</Text>
+      {rally.map((ev, i) => (
+        <Text key={`r${ev.id}`} dimColor={i < rally.length - 1}
+              color={ev.kind === 'system' ? undefined : ev.side === 'us' ? US_COLOR : THEM_COLOR}>
+          {eventLine(ev)}
+        </Text>
       ))}
       <Box>
         <Input

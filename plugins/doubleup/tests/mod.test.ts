@@ -49,7 +49,15 @@ type OnStub = Parameters<Parameters<typeof test>[1]>[1]
 
 // Stubs every test needs: the engine tier under session.start, a toast
 // sink the test can watch, and a clock that parks so the poll loop idles.
-function baseStubs(on: OnStub, opts: { sleep?: () => unknown; toast?: (text: string) => void; onSubmit?: (text: string) => void } = {}) {
+function baseStubs(on: OnStub, opts: {
+  sleep?: () => unknown
+  toast?: (text: string) => void
+  onSubmit?: (text: string) => void
+  storeGet?: (key: string) => unknown
+  onStoreSet?: (key: string, value: unknown) => void
+  onStoreDelete?: (key: string) => void
+  process?: (argv: string) => { exitCode: number; stdout: string; stderr: string }
+} = {}) {
   on('command.register', () => ({ value: { command: 'doubleup' } }))
   on('tool.register', () => ({ value: { tool: 'listed' } }))
   on('session.start', (_d, e) => ({ cwd: e.cwd }))
@@ -63,13 +71,38 @@ function baseStubs(on: OnStub, opts: { sleep?: () => unknown; toast?: (text: str
     return { value: {} }
   })
   on('clock.sleep', opts.sleep ?? (() => park()))
+  // The plugin persists its token through $.store and reads the hostname
+  // when it names a new device: unstubbed, both would hang a test. The kit
+  // allows one handler per event, so overrides ride the opts.
+  on('store.get', (_d, e) => ({ value: opts.storeGet?.(String(e.key ?? '')) }))
+  on('store.set', (_d, e) => {
+    opts.onStoreSet?.(String(e.key ?? ''), e.value)
+    return { value: undefined }
+  })
+  on('store.delete', (_d, e) => {
+    opts.onStoreDelete?.(String(e.key ?? ''))
+    return { value: undefined }
+  })
+  on('process.run', (_d, e) => {
+    const argv = Array.isArray((e as { argv?: unknown }).argv) ? (e as { argv: string[] }).argv.join(' ') : ''
+    if (opts.process) return { value: opts.process(argv) }
+    // Default: the hostname only; git facts are each test's own business.
+    if (argv === 'hostname') return { value: { exitCode: 0, stdout: 'rig.local\n', stderr: '' } }
+    return { value: { exitCode: 1, stdout: '', stderr: '' } }
+  })
 }
 
 test('login walks the device flow; status and logout follow the token', async ($, on) => {
   const signedIn = gate<void>()
-  baseStubs(on, { toast: text => {
-    if (text.includes('Ace')) signedIn.resolve()
-  } })
+  const stored: { key: string; value: unknown }[] = []
+  baseStubs(on, {
+    toast: text => {
+      if (text.includes('Ace')) signedIn.resolve()
+    },
+    onStoreSet: (key, value) => {
+      stored.push({ key, value })
+    },
+  })
   on('ui.render', () => ({ value: {} }))
   on('ui.invalidate', () => ({ value: {} }))
   on('ui.panes', () => ({ value: [] }))
@@ -89,6 +122,9 @@ test('login walks the device flow; status and logout follow the token', async ($
   expect(loginText.includes('https://x/device')).toBe(true)
 
   await signedIn.promise // the background token poll landed
+  expect(stored.some(s => s.key === 'auth' &&
+    typeof s.value === 'object' && s.value !== null &&
+    (s.value as { token?: unknown }).token === 'tok-9')).toBe(true)
   expect(textOf(await $.command.run({ command: 'doubleup', args: 'status' }))).toContain('Signed in')
 
   expect(textOf(await $.command.run({ command: 'doubleup', args: 'logout' }))).toContain('Logged out')
@@ -208,7 +244,7 @@ const MATCH_BODY = (over: boolean) => ({
 })
 
 test('serve creates the court, opens the pane, and shows the invite link', async ($, on) => {
-  baseStubs(on)
+  baseStubs(on, { process: argv => ({ exitCode: 0, stdout: argv.includes('rev-parse') ? 'main\n' : 'git@github.com:acme/app.git\n', stderr: '' }) })
   let court = seeded({ token: 'tok-1' })
   const posts: string[] = []
   const opens: string[] = []
@@ -231,10 +267,6 @@ test('serve creates the court, opens the pane, and shows the invite link', async
     }
     return answer(200, {})
   })
-  on('process.run', (_d, e) => {
-    const argv = Array.isArray((e as { argv?: unknown }).argv) ? (e as { argv: string[] }).argv.join(' ') : ''
-    return { value: { exitCode: 0, stdout: argv.includes('rev-parse') ? 'main\n' : 'git@github.com:acme/app.git\n', stderr: '' } }
-  })
   on('ui.open', (_d, e) => {
     opens.push(String(e.id ?? ''))
     return { value: { isPlaced: true } }
@@ -252,7 +284,7 @@ test('serve creates the court, opens the pane, and shows the invite link', async
 })
 
 test('join takes a link, sends the local repo, and opens the pane', async ($, on) => {
-  baseStubs(on)
+  baseStubs(on, { process: argv => ({ exitCode: 0, stdout: argv.includes('rev-parse') ? 'main\n' : 'git@github.com:acme/web.git\n', stderr: '' }) })
   let court = seeded({ token: 'tok-1' })
   const posts: string[] = []
   const opens: string[] = []
@@ -276,10 +308,6 @@ test('join takes a link, sends the local repo, and opens the pane', async ($, on
       return answer(200, MATCH_BODY(false))
     }
     return answer(200, {})
-  })
-  on('process.run', (_d, e) => {
-    const argv = Array.isArray((e as { argv?: unknown }).argv) ? (e as { argv: string[] }).argv.join(' ') : ''
-    return { value: { exitCode: 0, stdout: argv.includes('rev-parse') ? 'main\n' : 'git@github.com:acme/web.git\n', stderr: '' } }
   })
   on('ui.open', (_d, e) => {
     opens.push(String(e.id ?? ''))
@@ -341,6 +369,118 @@ test('the pane renders the court, and the auto toggle PATCHes the agent seat', a
   expect(patches.some(p => p.endsWith('/api/v1/matches/9/seats/2'))).toBe(true)
   const mine = (court.seats ?? []).find(s => s.id === 2)
   expect(mine?.auto_return).toBe(true)
+  await pane.unmount()
+})
+
+test('a stored token restores the login on session start', async ($, on) => {
+  const deleted: string[] = []
+  const calls: string[] = []
+  baseStubs(on, {
+    storeGet: key => (key === 'auth' ? { token: 'tok-9' } : undefined),
+    onStoreDelete: key => { deleted.push(key) },
+  })
+  let court = seeded({})
+  on('state.get', (_d, e) => ({
+    value: {
+      value: e.key === 'state'
+        ? { shape: 'state-2', value: court }
+        : { shape: 'poll-1', value: { interval: 3000 } },
+      version: 1,
+    },
+  }))
+  on('state.set', (_d, e) => {
+    if (e.key === 'state') court = unwrap(e.value) as DoubleUpState
+    return { value: { isSet: true } }
+  })
+  on('http.fetch', (_d, e) => {
+    const url = String(e.url ?? '')
+    calls.push(`${String((e.init as { method?: string } | undefined)?.method ?? 'GET')} ${url}`)
+    if (url.endsWith('/api/v1/me')) return answer(200, { matches: [{ id: 9, state: 'waiting' }] })
+    if (url.endsWith('/api/v1/matches/9')) return answer(200, MATCH_BODY(false))
+    return answer(200, {})
+  })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+
+  expect(calls.some(c => c.endsWith('/api/v1/me'))).toBe(true)
+  expect(court.token).toBe('tok-9')
+  expect(court.matchId).toBe(9)
+  expect(textOf(await $.command.run({ command: 'doubleup', args: 'status' }))).toContain('Signed in')
+
+  expect(textOf(await $.command.run({ command: 'doubleup', args: 'logout' }))).toContain('Logged out')
+  expect(deleted).toContain('auth')
+  expect(calls.some(c => c.startsWith('DELETE') && c.endsWith('/api/v1/device/revoke'))).toBe(true)
+  expect(court.token).toBe(undefined)
+})
+
+test('/doubleup name renames the device', async ($, on) => {
+  baseStubs(on)
+  let court = seeded({ token: 'tok-1' })
+  const bodies: string[] = []
+  on('state.get', (_d, e) => ({
+    value: {
+      value: e.key === 'state'
+        ? { shape: 'state-2', value: court }
+        : { shape: 'poll-1', value: { interval: 3000 } },
+      version: 1,
+    },
+  }))
+  on('state.set', (_d, e) => {
+    if (e.key === 'state') court = unwrap(e.value) as DoubleUpState
+    return { value: { isSet: true } }
+  })
+  on('http.fetch', (_d, e) => {
+    const url = String(e.url ?? '')
+    if (url.endsWith('/api/v1/device/rename')) {
+      bodies.push(String((e.init as { body?: string } | undefined)?.body ?? ''))
+      return answer(200, { name: 'kitchen pi' })
+    }
+    return answer(200, {})
+  })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+
+  const out = textOf(await $.command.run({ command: 'doubleup', args: 'name kitchen pi' }))
+  expect(out).toContain('kitchen pi')
+  expect(bodies.some(b => b.includes('kitchen pi'))).toBe(true)
+
+  expect(textOf(await $.command.run({ command: 'doubleup', args: 'name' }))).toContain('Try:')
+})
+
+test('the pane colors us pink and them cyan', async ($, on) => {
+  baseStubs(on)
+  let court = seeded({
+    token: 'tok-1', matchId: 9, matchState: 'live', volleyCount: 1, rallyCap: 6,
+    seats: [seat('us', 'human', 'Sam'), seat('us', 'agent', "Sam's agent"),
+            seat('them', 'human', 'Alex'), seat('them', 'agent', "Alex's agent")],
+    inbox: [{
+      id: 20, kind: 'chat', body: 'Hello from us', refs: [],
+      side: 'us', role: 'human', name: 'Sam', to_side: 'them',
+      client_event_id: 'c20', created_at: '2026-11-22T12:00:00Z',
+    }],
+  })
+  on('state.get', (_d, e) => ({
+    value: {
+      value: e.key === 'state'
+        ? { shape: 'state-2', value: court }
+        : { shape: 'poll-1', value: { interval: 3000 } },
+      version: 1,
+    },
+  }))
+  on('state.set', (_d, e) => {
+    if (e.key === 'state') court = unwrap(e.value) as DoubleUpState
+    return { value: { isSet: true } }
+  })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+
+  const pane = await $.ui.mount({
+    plugin: 'doubleup', component: 'Pane', requestId: 'doubleup-court', surface: 'terminal',
+    props: { title: 'Double Up court', viewport: { rows: 20 } },
+  })
+  const usLine = await pane.find({ type: 'Text', text: /Sam's agent/ })
+  expect(usLine?.props.color).toBe('#ff3d9a')
+  const themLine = await pane.find({ type: 'Text', text: /Alex's agent/ })
+  expect(themLine?.props.color).toBe('#1fe5ff')
+  const chat = await pane.find({ type: 'Text', text: /Hello from us/ })
+  expect(chat?.props.color).toBe('#ff3d9a')
   await pane.unmount()
 })
 
@@ -418,7 +558,16 @@ test('a 404 clears the court and climbs the ladder instead of spinning', async (
 })
 
 test('the tools speak: say posts chat under the tool_use id, serve carries git refs', async ($, on) => {
-  baseStubs(on)
+  const gitAnswers: Record<string, string> = {
+    'git remote get-url origin': 'git@github.com:acme/app.git',
+    'git rev-parse --abbrev-ref HEAD': 'fix/billing',
+    'git rev-parse HEAD': 'abc1234',
+  }
+  baseStubs(on, { process: argv => {
+    if (argv in gitAnswers) return { exitCode: 0, stdout: `${gitAnswers[argv]}\n`, stderr: '' }
+    if (argv.includes('origin')) return { exitCode: 0, stdout: 'git@github.com:acme/app.git\n', stderr: '' }
+    return { exitCode: 1, stdout: '', stderr: '' }
+  } })
   let court = seeded({
     token: 'tok-1', matchId: 9, matchState: 'live',
     seats: [seat('us', 'human', 'Sam'), { ...seat('us', 'agent', "Sam's agent"), id: 2 }],
@@ -439,17 +588,6 @@ test('the tools speak: say posts chat under the tool_use id, serve carries git r
   on('http.fetch', (_d, e) => {
     posts.push(`${String(e.url ?? '')} ${String((e.init as { body?: string } | undefined)?.body ?? '')}`)
     return answer(201, {})
-  })
-  const gitAnswers: Record<string, string> = {
-    'git remote get-url origin': 'git@github.com:acme/app.git',
-    'git rev-parse --abbrev-ref HEAD': 'fix/billing',
-    'git rev-parse HEAD': 'abc1234',
-  }
-  on('process.run', (_d, e) => {
-    const argv = Array.isArray((e as { argv?: unknown }).argv) ? (e as { argv: string[] }).argv.join(' ') : ''
-    if (argv in gitAnswers) return { value: { exitCode: 0, stdout: `${gitAnswers[argv]}\n`, stderr: '' } }
-    if (argv.includes('origin')) return { value: { exitCode: 0, stdout: 'git@github.com:acme/app.git\n', stderr: '' } }
-    return { value: { exitCode: 1, stdout: '', stderr: '' } }
   })
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
 
@@ -466,7 +604,7 @@ test('the tools speak: say posts chat under the tool_use id, serve carries git r
 })
 
 test('status posts the event and bumps the seat line', async ($, on) => {
-  baseStubs(on)
+  baseStubs(on, { process: () => ({ exitCode: 1, stdout: '', stderr: '' }) })
   let court = seeded({
     token: 'tok-1', matchId: 9, matchState: 'live',
     seats: [seat('us', 'human', 'Sam'), { ...seat('us', 'agent', "Sam's agent"), id: 2 }],
@@ -488,7 +626,6 @@ test('status posts the event and bumps the seat line', async ($, on) => {
     posts.push(`${String(e.url ?? '')} ${String((e.init as { body?: string } | undefined)?.body ?? '')}`)
     return answer(201, {})
   })
-  on('process.run', () => ({ value: { exitCode: 1, stdout: '', stderr: '' } }))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
 
   await $.tool.call({ tool: 'mcp__doubleup__status', text: 'chasing the flaky test', tool_use_id: 'tu-3' })
@@ -537,7 +674,7 @@ test('court answers with the digest the agent re-reads', async ($, on) => {
 })
 
 test('compose injects each event once, then lists ids; status reminds on the cadence', async ($, on) => {
-  baseStubs(on)
+  baseStubs(on, { process: () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }) })
   let court = seeded({
     token: 'tok-1', matchId: 9, matchState: 'live', volleyCount: 1, rallyCap: 6, turnCount: 4,
     seats: [seat('us', 'human', 'Sam', 'github.com/acme/api'), seat('them', 'human', 'Alex', 'github.com/acme/web')],
@@ -565,7 +702,6 @@ test('compose injects each event once, then lists ids; status reminds on the cad
     return { value: { isSet: true } }
   })
   on('http.fetch', () => answer(304, null))
-  on('process.run', () => ({ value: { exitCode: 0, stdout: 'main\n', stderr: '' } }))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
 
   const facts = { tools: [], traits: [], surfaces: ['terminal'] }
@@ -672,7 +808,7 @@ test('ace with an empty summary is a fault, and a refused post says Fault', asyn
 })
 
 test('the first compose on a fresh court does not nag for a status', async ($, on) => {
-  baseStubs(on)
+  baseStubs(on, { process: () => ({ exitCode: 0, stdout: 'main\n', stderr: '' }) })
   let court = seeded({
     token: 'tok-1', matchId: 9, matchState: 'live', turnCount: 0, lastBranch: null,
     seats: [seat('us', 'human', 'Sam'), { ...seat('us', 'agent', "Sam's agent"), id: 2 }],
@@ -690,7 +826,6 @@ test('the first compose on a fresh court does not nag for a status', async ($, o
     return { value: { isSet: true } }
   })
   on('http.fetch', () => answer(304, null))
-  on('process.run', () => ({ value: { exitCode: 0, stdout: 'main\n', stderr: '' } }))
   await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
 
   const facts = { tools: [], traits: [], surfaces: ['terminal'] }

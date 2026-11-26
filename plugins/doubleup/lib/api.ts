@@ -95,6 +95,38 @@ export function parseTokenResponse(status: number, body: unknown): TokenResult {
   return { kind: 'pending' }
 }
 
+// The account's matches, so a restart can find the court again.
+export function meRequest(base: string, token: string): HttpRequest {
+  return {
+    url: `${base}/api/v1/me`,
+    init: { headers: { Authorization: `Bearer ${token}` } },
+  }
+}
+
+export type MeMatch = { id: number; state: 'waiting' | 'live' | 'finished' }
+
+export type MeResult =
+  | { kind: 'me'; matches: MeMatch[] }
+  | { kind: 'unauthorized' }
+  | { kind: 'error' }
+
+export function parseMeResponse(status: number, body: unknown): MeResult {
+  if (status === 401) return { kind: 'unauthorized' }
+  const matches = typeof body === 'object' && body !== null ? (body as { matches?: unknown }).matches : undefined
+  if (status !== 200 || !Array.isArray(matches)) {
+    return { kind: 'error' }
+  }
+  const list: MeMatch[] = []
+  for (const raw of matches) {
+    if (typeof raw !== 'object' || raw === null || typeof raw.id !== 'number') continue
+    const state = raw.state
+    if (state === 'waiting' || state === 'live' || state === 'finished') {
+      list.push({ id: raw.id, state })
+    }
+  }
+  return { kind: 'me', matches: list }
+}
+
 export function feedRequest(base: string, token: string, matchId: number, after: number): HttpRequest {
   return {
     url: `${base}/api/v1/matches/${matchId}/events?after=${after}`,

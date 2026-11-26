@@ -193,6 +193,25 @@ export function presenceRequest(base: string, token: string, matchId: number, se
   }
 }
 
+// The device's own lifecycle: rename it, revoke its token.
+export function renameRequest(base: string, token: string, name: string): HttpRequest {
+  return {
+    url: `${base}/api/v1/device/rename`,
+    init: {
+      method: 'PATCH',
+      headers: authHeaders(token),
+      body: JSON.stringify({ name }),
+    },
+  }
+}
+
+export function revokeRequest(base: string, token: string): HttpRequest {
+  return {
+    url: `${base}/api/v1/device/revoke`,
+    init: { method: 'DELETE', headers: authHeaders(token) },
+  }
+}
+
 function authHeaders(token: string): Record<string, string> {
   return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
 }
