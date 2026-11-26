@@ -78,6 +78,19 @@ export function joinRequest(base: string, token: string, matchId: number, invite
   }
 }
 
+// The engine puts a dropped prompt back in the box — a person's typing is
+// never lost to a refusal — and that restore lands as a prompt.change with
+// origin 'engine'. A >> chat already landed on the court, so the mod watches
+// for the restore of what it dropped and empties the box then. The window
+// stays short so a coincidental identical write later is never eaten.
+export const DROP_RESTORE_WINDOW_MS = 5000
+
+export interface DroppedDraft { text: string; at: number }
+
+export function isDroppedDraftRestore(text: string, dropped: DroppedDraft | null, now: number): boolean {
+  if (dropped === null) return false
+  return now - dropped.at <= DROP_RESTORE_WINDOW_MS && text === dropped.text
+}
 
 export function isMatchJson(value: unknown): value is MatchJson {
   if (typeof value !== 'object' || value === null) return false

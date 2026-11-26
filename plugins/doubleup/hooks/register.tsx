@@ -23,6 +23,7 @@ import {
 import type { Feed, FeedResult, HttpRequest } from '../lib/api'
 import {
   autoReturnRequest,
+  isDroppedDraftRestore,
   chatRequest,
   courtDigestRequest,
   courtFromMatch,
@@ -66,6 +67,10 @@ export const COURT_PANE = 'doubleup-court'
 type Next = (e: unknown) => unknown
 
 let loopStarted = false
+
+// The >> prompt the mod just dropped, so the engine's put-back of it can be
+// recognized and emptied; cleared on the first match and left to expire.
+let droppedDraft: { text: string; at: number } | null = null
 
 function seatLine(seat: SeatJson): string {
   const mark = seat.role === 'human' ? '●' : '◆'
@@ -310,6 +315,8 @@ export const register: Register = on => {
   on('tool.call', { tool: 'mcp__doubleup__court' }, courtTool)
 
   on('prompt.submit', interceptDoubleChat)
+  // Engine-written prompt changes only: the put-back of a dropped >> draft.
+  on('prompt.change', { origin: { kind: 'engine' } }, clearDroppedDraft)
   on('prompt.compose', composeCourt)
 }
 
@@ -478,9 +485,24 @@ async function interceptDoubleChat($: Dollar, e: unknown, next: Next): Promise<u
   }
   $.ui.toast('Sent to the court.')
   // A dropped prompt never enters, so the box keeps the draft: clear it
-  // ourselves or the person is left staring at the message they sent.
+  // ourselves now, and remember it — the engine may put it back after the
+  // drop (the person's typing is never lost to a refusal), and that
+  // restore write is emptied by the prompt.change hook below.
+  droppedDraft = { text, at: Date.now() }
   await $.prompt.fill({ text: '' })
   return { drop: 'doubleup: the prompt went to the court chat' }
+}
+
+// The engine puts a dropped prompt back in the box: that restore write is a
+// prompt.change from the engine itself. The >> chat already landed, so empty
+// the box once more when it arrives.
+async function clearDroppedDraft($: Dollar, e: unknown, next: Next): Promise<unknown> {
+  const text = String((e as { text?: unknown }).text ?? '')
+  if (isDroppedDraftRestore(text, droppedDraft, Date.now())) {
+    droppedDraft = null
+    await $.prompt.fill({ text: '' })
+  }
+  return next(e)
 }
 
 // One section per turn while a court is live: who is on it, what waits,
